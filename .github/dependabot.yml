@@ -15,3 +15,15 @@ updates:
       github-actions-dependencies:
         patterns:
           - "*"
+
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-patch"]
+    groups:
+      cargo-dependencies:
+        patterns:
+          - "*"

@@ -9,7 +9,7 @@ env:
   CARGO_TERM_COLOR: always
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   validate:
@@ -56,8 +56,6 @@ jobs:
     name: Create GitHub Release
     needs: publish
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v7
 

@@ -71,8 +71,8 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::encoding::DecimalError;
 use crate::Decimal;
+use crate::encoding::DecimalError;
 
 /// Maximum precision that fits in 56-bit value (16 digits).
 pub const MAX_DECIMAL64_PRECISION: u32 = 16;

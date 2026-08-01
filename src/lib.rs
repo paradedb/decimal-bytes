@@ -135,9 +135,9 @@ pub use decimal64_no_scale::{
 pub use encoding::DecimalError;
 pub use encoding::SpecialValue;
 use encoding::{
-    decode_special_value, decode_to_string, decode_to_string_with_scale, encode_decimal,
-    encode_decimal_with_constraints, encode_special_value, ENCODING_NAN, ENCODING_NEG_INFINITY,
-    ENCODING_POS_INFINITY,
+    ENCODING_NAN, ENCODING_NEG_INFINITY, ENCODING_POS_INFINITY, decode_special_value,
+    decode_to_string, decode_to_string_with_scale, encode_decimal, encode_decimal_with_constraints,
+    encode_special_value,
 };
 
 /// An arbitrary precision decimal number stored as sortable bytes.

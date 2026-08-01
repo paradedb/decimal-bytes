@@ -8,7 +8,7 @@ description = "Arbitrary precision decimals with lexicographically sortable byte
 repository = "https://github.com/paradedb/decimal-bytes"
 homepage = "https://github.com/paradedb/decimal-bytes"
 keywords = ["decimal", "numeric", "encoding", "sortable"]
-edition = "2021"
+edition = "2024"
 rust-version = "1.85"
 
 [features]

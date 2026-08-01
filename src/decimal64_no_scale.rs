@@ -55,8 +55,8 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::encoding::DecimalError;
 use crate::Decimal;
+use crate::encoding::DecimalError;
 
 /// Maximum precision that fits in signed i64 (18 digits).
 /// i64::MAX = 9,223,372,036,854,775,807 ≈ 9.2 × 10^18
@@ -873,12 +873,16 @@ mod tests {
 
     #[test]
     fn test_from_str_special() {
-        assert!(Decimal64NoScale::new("Infinity", 0)
-            .unwrap()
-            .is_pos_infinity());
-        assert!(Decimal64NoScale::new("-Infinity", 0)
-            .unwrap()
-            .is_neg_infinity());
+        assert!(
+            Decimal64NoScale::new("Infinity", 0)
+                .unwrap()
+                .is_pos_infinity()
+        );
+        assert!(
+            Decimal64NoScale::new("-Infinity", 0)
+                .unwrap()
+                .is_neg_infinity()
+        );
         assert!(Decimal64NoScale::new("NaN", 0).unwrap().is_nan());
     }
 
@@ -984,12 +988,16 @@ mod tests {
 
         // Special values
         assert!(Decimal64NoScale::from_f64(f64::NAN, 2).unwrap().is_nan());
-        assert!(Decimal64NoScale::from_f64(f64::INFINITY, 2)
-            .unwrap()
-            .is_pos_infinity());
-        assert!(Decimal64NoScale::from_f64(f64::NEG_INFINITY, 2)
-            .unwrap()
-            .is_neg_infinity());
+        assert!(
+            Decimal64NoScale::from_f64(f64::INFINITY, 2)
+                .unwrap()
+                .is_pos_infinity()
+        );
+        assert!(
+            Decimal64NoScale::from_f64(f64::NEG_INFINITY, 2)
+                .unwrap()
+                .is_neg_infinity()
+        );
 
         // Negative value
         let d = Decimal64NoScale::from_f64(-99.99, 2).unwrap();

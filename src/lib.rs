@@ -135,10 +135,11 @@ pub use decimal64_no_scale::{
 pub use encoding::DecimalError;
 pub use encoding::SpecialValue;
 use encoding::{
-    ENCODING_NAN, ENCODING_NEG_INFINITY, ENCODING_POS_INFINITY, decode_special_value,
-    decode_to_string, decode_to_string_with_scale, encode_decimal, encode_decimal_with_constraints,
+    ENCODING_NAN, ENCODING_NEG_INFINITY, ENCODING_POS_INFINITY, decode_to_string,
+    decode_to_string_with_scale, encode_decimal, encode_decimal_with_constraints,
     encode_special_value,
 };
+pub use encoding::{decode_parts_into, decode_special_value};
 
 /// An arbitrary precision decimal number stored as sortable bytes.
 ///
@@ -415,6 +416,32 @@ impl Decimal {
     /// ```
     pub fn to_string_with_scale(&self, scale: i32) -> String {
         decode_to_string_with_scale(&self.bytes, scale).expect("Decimal contains valid bytes")
+    }
+
+    /// Decomposes a finite value for arithmetic without a string round-trip:
+    /// `value = sign * 0.digits * 10^exponent`, digit values 0-9, most
+    /// significant first, trailing zeros stripped. Clears and refills
+    /// `digits` so a caller can reuse one buffer across many decodes.
+    ///
+    /// Returns `None` for NaN and +/-Infinity. Zero decodes to an empty
+    /// digit buffer with exponent 0.
+    ///
+    /// # Example
+    /// ```
+    /// use decimal_bytes::Decimal;
+    /// use std::str::FromStr;
+    ///
+    /// let d = Decimal::from_str("-12.5").unwrap();
+    /// let mut digits = Vec::new();
+    /// let (negative, exponent) = d.read_parts_into(&mut digits).unwrap();
+    /// assert!(negative);
+    /// assert_eq!(exponent, 2); // -0.125 * 10^2
+    /// assert_eq!(digits, vec![1, 2, 5]);
+    ///
+    /// assert_eq!(Decimal::nan().read_parts_into(&mut digits), None);
+    /// ```
+    pub fn read_parts_into(&self, digits: &mut Vec<u8>) -> Option<(bool, i32)> {
+        decode_parts_into(&self.bytes, digits).expect("Decimal contains valid bytes")
     }
 }
 

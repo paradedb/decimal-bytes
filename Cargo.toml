@@ -1,6 +1,6 @@
 [package]
 name = "decimal-bytes"
-version = "0.4.2"
+version = "0.4.3"
 authors = ["ParadeDB <support@paradedb.com>"]
 license = "MIT"
 categories = ["encoding", "data-structures"]

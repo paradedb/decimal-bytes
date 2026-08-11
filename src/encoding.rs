@@ -431,6 +431,19 @@ fn encode_mantissa(result: &mut Vec<u8>, digits: &[u8], is_negative: bool) {
 /// Decodes the mantissa from BCD bytes.
 fn decode_mantissa(bytes: &[u8], is_negative: bool) -> Result<Vec<u8>, DecimalError> {
     let mut digits = Vec::with_capacity(bytes.len() * 2);
+    decode_mantissa_into(bytes, is_negative, &mut digits)?;
+    Ok(digits)
+}
+
+/// Decodes the mantissa from BCD bytes into a caller-provided buffer, so hot
+/// loops can reuse one allocation across many decodes.
+fn decode_mantissa_into(
+    bytes: &[u8],
+    is_negative: bool,
+    digits: &mut Vec<u8>,
+) -> Result<(), DecimalError> {
+    digits.clear();
+    digits.reserve(bytes.len() * 2);
 
     for &byte in bytes {
         let byte = if is_negative { !byte } else { byte };
@@ -450,7 +463,45 @@ fn decode_mantissa(bytes: &[u8], is_negative: bool) -> Result<Vec<u8>, DecimalEr
         digits.pop();
     }
 
-    Ok(digits)
+    Ok(())
+}
+
+/// Decodes a finite value's parts without formatting a string:
+/// `value = sign * 0.digits * 10^exponent`, digit values 0-9, most
+/// significant first, trailing zeros stripped. Clears and refills `digits`
+/// so a caller can reuse one buffer across many decodes.
+///
+/// Returns `Ok(None)` for NaN and +/-Infinity. Zero decodes to an empty
+/// digit buffer with exponent 0.
+pub fn decode_parts_into(
+    bytes: &[u8],
+    digits: &mut Vec<u8>,
+) -> Result<Option<(bool, i32)>, DecimalError> {
+    if bytes.is_empty() {
+        return Err(DecimalError::InvalidEncoding);
+    }
+
+    if decode_special_value(bytes).is_some() {
+        return Ok(None);
+    }
+
+    let sign_byte = bytes[0];
+
+    if sign_byte == SIGN_ZERO {
+        digits.clear();
+        return Ok(Some((false, 0)));
+    }
+
+    let is_negative = sign_byte == SIGN_NEGATIVE;
+
+    if sign_byte != SIGN_NEGATIVE && sign_byte != SIGN_POSITIVE {
+        return Err(DecimalError::InvalidEncoding);
+    }
+
+    let (exponent, mantissa_start) = decode_exponent(&bytes[1..], is_negative)?;
+    decode_mantissa_into(&bytes[1 + mantissa_start..], is_negative, digits)?;
+
+    Ok(Some((is_negative, exponent)))
 }
 
 /// Formats digits and exponent back to a decimal string.
@@ -1016,5 +1067,63 @@ mod tests {
 
         let nan = encode_decimal_with_constraints("NaN", Some(5), Some(2)).unwrap();
         assert_eq!(nan, ENCODING_NAN.to_vec());
+    }
+
+    #[test]
+    fn test_decode_parts_into_matches_decode_to_string() {
+        // Reconstructing the string from the parts must match the string
+        // decoder, so both stay pinned to the same encoding semantics.
+        let values = [
+            "0",
+            "1",
+            "-1",
+            "0.1",
+            "-0.125",
+            "3.30",
+            "12000",
+            "123.456",
+            "-987654321.123456789",
+            "0.000001",
+            "999999999999999999999999999999999999999999999999999999999999999999999999999999",
+            "10000000000000000000000000000000000000000000000000000000000000000000123",
+        ];
+        let mut digits = Vec::new();
+        for value in values {
+            let bytes = encode_decimal(value).unwrap();
+            let (is_negative, exponent) = decode_parts_into(&bytes, &mut digits)
+                .unwrap()
+                .unwrap_or_else(|| panic!("finite value {value} decoded as special"));
+            let formatted = format_decimal(is_negative, &digits, exponent).unwrap();
+            assert_eq!(
+                formatted,
+                decode_to_string(&bytes).unwrap(),
+                "value {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_decode_parts_into_reuses_buffer() {
+        let mut digits = vec![9, 9, 9, 9, 9, 9, 9, 9];
+        let bytes = encode_decimal("12.5").unwrap();
+        let (is_negative, exponent) = decode_parts_into(&bytes, &mut digits).unwrap().unwrap();
+        assert!(!is_negative);
+        assert_eq!(exponent, 2);
+        assert_eq!(digits, vec![1, 2, 5]);
+    }
+
+    #[test]
+    fn test_decode_parts_into_zero_and_specials() {
+        let mut digits = vec![7];
+        let zero = encode_decimal("0").unwrap();
+        assert_eq!(
+            decode_parts_into(&zero, &mut digits).unwrap(),
+            Some((false, 0))
+        );
+        assert!(digits.is_empty());
+
+        for special in [ENCODING_NAN, ENCODING_POS_INFINITY, ENCODING_NEG_INFINITY] {
+            assert_eq!(decode_parts_into(&special, &mut digits).unwrap(), None);
+        }
     }
 }

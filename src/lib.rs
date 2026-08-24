@@ -214,8 +214,10 @@ impl Decimal {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, DecimalError> {
         // Validate by attempting to decode
         let _ = decode_to_string(bytes)?;
+        // A negative mantissa in the terminator-less layout is accepted but
+        // rewritten, so that `Ord` and `Eq` stay byte comparisons.
         Ok(Self {
-            bytes: bytes.to_vec(),
+            bytes: encoding::canonicalize(bytes)?,
         })
     }
 
@@ -243,6 +245,29 @@ impl Decimal {
     #[inline]
     pub fn into_bytes(self) -> Vec<u8> {
         self.bytes
+    }
+
+    /// Returns this value in the layout that stored negative mantissas as
+    /// bitwise-inverted BCD without a terminator. Non-negative and special values
+    /// are identical in both layouts.
+    ///
+    /// That layout does not order negative numbers correctly and does not sort
+    /// together with [`as_bytes`](Self::as_bytes), so this is only for writing
+    /// into a store that already holds values in it and has not been rebuilt.
+    /// [`from_bytes`](Self::from_bytes) reads either layout.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use decimal_bytes::Decimal;
+    /// use std::str::FromStr;
+    ///
+    /// let d = Decimal::from_str("-1").unwrap();
+    /// assert_eq!(d.to_legacy_bytes(), vec![0x00, 0xBF, 0xFE, 0xEF]);
+    /// assert_eq!(Decimal::from_bytes(&d.to_legacy_bytes()).unwrap(), d);
+    /// ```
+    pub fn to_legacy_bytes(&self) -> Vec<u8> {
+        encoding::to_legacy_encoding(&self.bytes).expect("Decimal contains valid bytes")
     }
 
     /// Returns true if this decimal represents zero.
@@ -1504,6 +1529,62 @@ mod tests {
         ];
         let result = Decimal::from_bytes(&bytes_with_reserved_exp);
         assert!(result.is_err());
+    }
+
+    mod ordering_props {
+        use super::*;
+        use bigdecimal::BigDecimal;
+        use proptest::prelude::*;
+
+        /// Decimal strings with enough shape variety to hit shared-prefix mantissas,
+        /// odd digit counts, and exponent boundaries on both sides of zero.
+        fn decimal_string() -> impl Strategy<Value = String> {
+            (
+                any::<bool>(),
+                "[0-9]{0,24}",
+                proptest::option::of("[0-9]{1,24}"),
+                proptest::option::of(-40i32..40),
+            )
+                .prop_filter_map("needs a digit", |(negative, int, frac, exp)| {
+                    if int.is_empty() && frac.is_none() {
+                        return None;
+                    }
+                    let mut s = String::new();
+                    if negative {
+                        s.push('-');
+                    }
+                    s.push_str(if int.is_empty() { "0" } else { &int });
+                    if let Some(frac) = frac {
+                        s.push('.');
+                        s.push_str(&frac);
+                    }
+                    if let Some(exp) = exp {
+                        s.push_str(&format!("e{exp}"));
+                    }
+                    Some(s)
+                })
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(4000))]
+
+            #[test]
+            fn byte_order_matches_numeric_order(a in decimal_string(), b in decimal_string()) {
+                let (da, db) = (Decimal::from_str(&a).unwrap(), Decimal::from_str(&b).unwrap());
+                let (ba, bb) = (BigDecimal::from_str(&a).unwrap(), BigDecimal::from_str(&b).unwrap());
+                prop_assert_eq!(da.as_bytes().cmp(db.as_bytes()), ba.cmp(&bb), "{} vs {}", a, b);
+            }
+
+            #[test]
+            fn roundtrip_through_both_layouts(a in decimal_string()) {
+                let d = Decimal::from_str(&a).unwrap();
+                let expected = BigDecimal::from_str(&a).unwrap();
+                prop_assert_eq!(BigDecimal::from_str(&d.to_string()).unwrap(), expected.clone());
+                let legacy = Decimal::from_bytes(&d.to_legacy_bytes()).unwrap();
+                prop_assert_eq!(&legacy, &d);
+                prop_assert_eq!(BigDecimal::from_str(&legacy.to_string()).unwrap(), expected);
+            }
+        }
     }
 
     #[test]

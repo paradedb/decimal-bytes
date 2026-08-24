@@ -1,6 +1,6 @@
 [package]
 name = "decimal-bytes"
-version = "0.4.3"
+version = "0.5.0"
 authors = ["ParadeDB <support@paradedb.com>"]
 license = "MIT"
 categories = ["encoding", "data-structures"]
@@ -27,6 +27,7 @@ rust_decimal = { version = "1.36", optional = true }
 bigdecimal = { version = "0.4", optional = true }
 
 [dev-dependencies]
+bigdecimal = "0.4"
 proptest = "1.0"
 serde_json = "1.0"
 criterion = "0.8"

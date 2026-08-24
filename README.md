@@ -269,7 +269,7 @@ The encoding matches PostgreSQL's storage efficiency (2 bytes per 4 decimal digi
 
 - 1 byte for sign
 - 2 bytes for exponent  
-- ~N/2 bytes for N-digit mantissa (BCD encoding: 2 digits per byte)
+- ~N/2 bytes for N-digit mantissa (BCD encoding: 2 digits per byte), plus 1 terminator byte for negative numbers
 - Special values: 3 bytes each
 
 Example: A 9-digit number like `123456789` requires only ~8 bytes total.

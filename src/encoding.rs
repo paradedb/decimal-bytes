@@ -11,7 +11,19 @@
 //!
 //! - **Sign byte**: 0x00 for negative, 0x80 for zero, 0xFF for positive
 //! - **Exponent**: Variable-length, biased encoding (inverted for negative numbers)
-//! - **Mantissa**: BCD-encoded digits, 2 per byte (inverted for negative numbers)
+//! - **Mantissa**: BCD-encoded digits, 2 per byte. Negative numbers store the
+//!   nine's complement of each digit and end with a `0xFF` terminator byte.
+//!
+//! The mantissa carries no length, so a mantissa that is a prefix of a longer one
+//! compares as smaller. That is right for positive numbers (`0.5 < 0.51`) and
+//! wrong for negative ones (`-0.5 > -0.51`). The terminator sorts above every
+//! complemented digit pair (at most `0x99`), so the shorter negative mantissa
+//! compares as greater. A bitwise inversion would not do: an inverted `00` pair
+//! is `0xFF` and would tie with the terminator.
+//!
+//! Negative mantissas written without the terminator (bitwise-inverted BCD) are
+//! still decoded. They never end in `0xFF`, which is how the two layouts are told
+//! apart. See `Decimal::to_legacy_bytes` for producing that layout.
 //!
 //! ## Special Values (PostgreSQL compatible)
 //!
@@ -31,6 +43,10 @@ use thiserror::Error;
 pub(crate) const SIGN_NEGATIVE: u8 = 0x00;
 pub(crate) const SIGN_ZERO: u8 = 0x80;
 pub(crate) const SIGN_POSITIVE: u8 = 0xFF;
+
+/// Ends a negative mantissa. Must sort above every nine's-complemented digit pair
+/// (at most `0x99`) so a shorter mantissa sorts after any longer one it prefixes.
+pub(crate) const NEGATIVE_MANTISSA_TERMINATOR: u8 = 0xFF;
 
 /// Special value encodings (designed for correct lexicographic ordering)
 /// -Infinity: [0x00, 0x00, 0x00] - sorts before all negative numbers
@@ -409,22 +425,57 @@ fn decode_exponent(bytes: &[u8], is_negative: bool) -> Result<(i32, usize), Deci
 
 /// Encodes the mantissa as BCD (2 digits per byte).
 fn encode_mantissa(result: &mut Vec<u8>, digits: &[u8], is_negative: bool) {
-    // Pack 2 digits per byte
-    let mut i = 0;
-    while i < digits.len() {
-        let high = digits[i];
-        let low = if i + 1 < digits.len() {
-            digits[i + 1]
+    for pair in digits.chunks(2) {
+        // An odd digit count is padded with a zero. For negatives the complement
+        // turns the pad into a 9, which keeps `-0.5` above `-0.50001`.
+        let byte = pack_bcd(pair);
+        result.push(if is_negative {
+            nines_complement(byte)
         } else {
-            0 // Pad with 0 if odd number of digits
-        };
+            byte
+        });
+    }
+    if is_negative {
+        result.push(NEGATIVE_MANTISSA_TERMINATOR);
+    }
+}
 
-        let byte = (high << 4) | low;
+/// Packs one or two digits into a BCD byte, zero-padding the low nibble.
+#[inline]
+fn pack_bcd(pair: &[u8]) -> u8 {
+    (pair[0] << 4) | pair.get(1).copied().unwrap_or(0)
+}
 
-        // For negative numbers, invert to reverse the sort order
-        result.push(if is_negative { !byte } else { byte });
+#[inline]
+fn is_bcd(byte: u8) -> bool {
+    (byte >> 4) <= 9 && (byte & 0x0F) <= 9
+}
 
-        i += 2;
+/// Nine's complement of both BCD nibbles at once. No borrow crosses between the
+/// nibbles because neither exceeds 9.
+#[inline]
+fn nines_complement(bcd: u8) -> u8 {
+    0x99 - bcd
+}
+
+/// How the digit pairs of a mantissa were transformed on the way in.
+#[derive(Clone, Copy)]
+enum MantissaLayout {
+    Plain,
+    /// Negative: nine's complement, followed by the terminator.
+    Complemented,
+    /// Negative, written before the terminator existed: bitwise inversion.
+    Inverted,
+}
+
+/// Strips the terminator (when present) and reports which layout the bytes use.
+fn split_mantissa(bytes: &[u8], is_negative: bool) -> (&[u8], MantissaLayout) {
+    if !is_negative {
+        return (bytes, MantissaLayout::Plain);
+    }
+    match bytes.split_last() {
+        Some((&NEGATIVE_MANTISSA_TERMINATOR, body)) => (body, MantissaLayout::Complemented),
+        _ => (bytes, MantissaLayout::Inverted),
     }
 }
 
@@ -445,17 +496,25 @@ fn decode_mantissa_into(
     digits.clear();
     digits.reserve(bytes.len() * 2);
 
-    for &byte in bytes {
-        let byte = if is_negative { !byte } else { byte };
-        let high = (byte >> 4) & 0x0F;
-        let low = byte & 0x0F;
+    let (bytes, layout) = split_mantissa(bytes, is_negative);
 
-        if high > 9 || low > 9 {
+    for &byte in bytes {
+        let byte = match layout {
+            MantissaLayout::Plain => byte,
+            MantissaLayout::Complemented => {
+                if !is_bcd(byte) {
+                    return Err(DecimalError::InvalidEncoding);
+                }
+                nines_complement(byte)
+            }
+            MantissaLayout::Inverted => !byte,
+        };
+        if !is_bcd(byte) {
             return Err(DecimalError::InvalidEncoding);
         }
 
-        digits.push(high);
-        digits.push(low);
+        digits.push(byte >> 4);
+        digits.push(byte & 0x0F);
     }
 
     // Remove trailing zeros (padding)
@@ -464,6 +523,53 @@ fn decode_mantissa_into(
     }
 
     Ok(())
+}
+
+/// Splits a finite negative encoding into its sign-plus-exponent head (returned)
+/// and its decoded digits (written to `digits`). Returns `None` for anything that
+/// is not a finite negative number.
+fn split_negative<'a>(
+    bytes: &'a [u8],
+    digits: &mut Vec<u8>,
+) -> Result<Option<&'a [u8]>, DecimalError> {
+    if bytes.first() != Some(&SIGN_NEGATIVE) || decode_special_value(bytes).is_some() {
+        return Ok(None);
+    }
+    let (_, mantissa_start) = decode_exponent(&bytes[1..], true)?;
+    let head_len = 1 + mantissa_start;
+    decode_mantissa_into(&bytes[head_len..], true, digits)?;
+    Ok(Some(&bytes[..head_len]))
+}
+
+/// Re-encodes `bytes` in the layout that stored negative mantissas as
+/// bitwise-inverted BCD with no terminator. Non-negative and special values are
+/// identical in both layouts and are returned unchanged.
+///
+/// The two layouts do not sort together, so a store that already holds values in
+/// the older layout has to keep receiving it until it is rebuilt.
+pub(crate) fn to_legacy_encoding(bytes: &[u8]) -> Result<Vec<u8>, DecimalError> {
+    let mut digits = Vec::new();
+    let Some(head) = split_negative(bytes, &mut digits)? else {
+        return Ok(bytes.to_vec());
+    };
+    let mut out = head.to_vec();
+    out.extend(digits.chunks(2).map(|pair| !pack_bcd(pair)));
+    Ok(out)
+}
+
+/// Returns `bytes` in the current layout, re-encoding a negative mantissa that
+/// was written without the terminator. Everything else is copied as is.
+pub(crate) fn canonicalize(bytes: &[u8]) -> Result<Vec<u8>, DecimalError> {
+    if bytes.last() == Some(&NEGATIVE_MANTISSA_TERMINATOR) {
+        return Ok(bytes.to_vec());
+    }
+    let mut digits = Vec::new();
+    let Some(head) = split_negative(bytes, &mut digits)? else {
+        return Ok(bytes.to_vec());
+    };
+    let mut out = head.to_vec();
+    encode_mantissa(&mut out, &digits, true);
+    Ok(out)
 }
 
 /// Decodes a finite value's parts without formatting a string:
@@ -801,6 +907,113 @@ mod tests {
                 values[i + 1]
             );
         }
+    }
+
+    #[test]
+    fn test_negative_prefix_ordering() {
+        // Each negative mantissa here is a prefix of the next one's digits, or
+        // shares its leading digits with it, which is where the terminator and
+        // the nine's complement matter.
+        let values = vec![
+            "-50000", "-49999", "-49998", "-49990", "-49000", "-5.1", "-5.0001", "-5", "-0.51",
+            "-0.50001", "-0.5", "-0.4999", "-0.49",
+        ];
+
+        let encoded: Vec<Vec<u8>> = values.iter().map(|s| encode_decimal(s).unwrap()).collect();
+
+        for i in 0..encoded.len() - 1 {
+            assert!(
+                encoded[i] < encoded[i + 1],
+                "Ordering failed: {} should be < {}",
+                values[i],
+                values[i + 1]
+            );
+        }
+    }
+
+    #[test]
+    fn test_negative_mantissa_layout() {
+        // -1: sign, inverted biased exponent 0x4001, nine's complement of 0x10, terminator
+        assert_eq!(
+            encode_decimal("-1").unwrap(),
+            vec![0x00, 0xBF, 0xFE, 0x89, 0xFF]
+        );
+        // -100001: digits 1,0,0,0,0,1 -> pairs 0x10 0x00 0x01
+        assert_eq!(
+            encode_decimal("-100001").unwrap(),
+            vec![0x00, 0xBF, 0xF9, 0x89, 0x99, 0x98, 0xFF]
+        );
+    }
+
+    #[test]
+    fn test_legacy_negative_encoding() {
+        // Bitwise-inverted BCD, no terminator.
+        assert_eq!(
+            to_legacy_encoding(&encode_decimal("-1").unwrap()).unwrap(),
+            vec![0x00, 0xBF, 0xFE, 0xEF]
+        );
+        assert_eq!(
+            to_legacy_encoding(&encode_decimal("-100001").unwrap()).unwrap(),
+            vec![0x00, 0xBF, 0xF9, 0xEF, 0xFF, 0xFE]
+        );
+
+        for s in [
+            "-1",
+            "-100001",
+            "-0.5",
+            "-123.456",
+            "-99999999999999999999.9999999999",
+            "-0.000000000000000001",
+            "0",
+            "1",
+            "123.456",
+            "Infinity",
+            "-Infinity",
+            "NaN",
+        ] {
+            let current = encode_decimal(s).unwrap();
+            let legacy = to_legacy_encoding(&current).unwrap();
+            assert_eq!(
+                decode_to_string(&legacy).unwrap(),
+                decode_to_string(&current).unwrap(),
+                "legacy decode differs for {s}"
+            );
+            let mut digits = Vec::new();
+            let mut legacy_digits = Vec::new();
+            assert_eq!(
+                decode_parts_into(&current, &mut digits).unwrap(),
+                decode_parts_into(&legacy, &mut legacy_digits).unwrap(),
+                "legacy parts differ for {s}"
+            );
+            assert_eq!(digits, legacy_digits, "legacy digits differ for {s}");
+            assert_eq!(
+                canonicalize(&legacy).unwrap(),
+                current,
+                "canonicalize failed for {s}"
+            );
+            assert_eq!(
+                canonicalize(&current).unwrap(),
+                current,
+                "canonicalize changed {s}"
+            );
+            if !s.starts_with('-') || s == "-Infinity" {
+                assert_eq!(legacy, current, "non-negative layout changed for {s}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_invalid_negative_mantissa_bytes() {
+        // A nine's-complemented pair can't have a nibble above 9.
+        assert_eq!(
+            decode_to_string(&[0x00, 0xBF, 0xFE, 0xAF, 0xFF]),
+            Err(DecimalError::InvalidEncoding)
+        );
+        // Neither can an inverted one, once inverted back.
+        assert_eq!(
+            decode_to_string(&[0x00, 0xBF, 0xFE, 0x0F]),
+            Err(DecimalError::InvalidEncoding)
+        );
     }
 
     #[test]

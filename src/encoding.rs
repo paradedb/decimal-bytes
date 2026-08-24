@@ -915,8 +915,21 @@ mod tests {
         // shares its leading digits with it, which is where the terminator and
         // the nine's complement matter.
         let values = vec![
-            "-50000", "-49999", "-49998", "-49990", "-49000", "-5.1", "-5.0001", "-5", "-0.51",
-            "-0.50001", "-0.5", "-0.4999", "-0.49",
+            "-50000",
+            "-49999",
+            "-49998",
+            "-49990",
+            "-49000",
+            "-5.1",
+            "-5.0001",
+            "-5",
+            "-1.500001",
+            "-1.5",
+            "-0.51",
+            "-0.50001",
+            "-0.5",
+            "-0.4999",
+            "-0.49",
         ];
 
         let encoded: Vec<Vec<u8>> = values.iter().map(|s| encode_decimal(s).unwrap()).collect();

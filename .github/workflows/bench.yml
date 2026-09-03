@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: write
+  issues: write
   pull-requests: write
 
 env:
@@ -111,51 +112,65 @@ jobs:
           critcmp base pr >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
 
+      # Fork PRs get a read-only GITHUB_TOKEN, so commenting fails with 403 even
+      # when pull-requests: write is requested. Benchmarks already ran and are
+      # written to the job summary above — do not fail the check on comment.
       - name: Comment on PR
+        if: github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/github-script@v9
         with:
           script: |
             const { execSync } = require('child_process');
-            
+
             const output = execSync('critcmp base pr', { encoding: 'utf-8' });
-            
+
             const body = `## 📊 Benchmark Comparison
-            
+
             <details>
             <summary>Click to expand benchmark results</summary>
-            
+
             \`\`\`
             ${output}
             \`\`\`
-            
+
             </details>
-            
+
             > Compared against \`${{ github.base_ref }}\` branch
             `;
-            
-            // Find existing comment
-            const { data: comments } = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-            });
-            
-            const botComment = comments.find(c => 
-              c.user.type === 'Bot' && c.body.includes('Benchmark Comparison')
-            );
-            
-            if (botComment) {
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: botComment.id,
-                body: body
-              });
-            } else {
-              await github.rest.issues.createComment({
+
+            try {
+              const { data: comments } = await github.rest.issues.listComments({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: context.issue.number,
-                body: body
               });
+
+              const botComment = comments.find(c =>
+                c.user.type === 'Bot' && c.body.includes('Benchmark Comparison')
+              );
+
+              if (botComment) {
+                await github.rest.issues.updateComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: botComment.id,
+                  body: body
+                });
+              } else {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  body: body
+                });
+              }
+            } catch (error) {
+              core.warning(
+                `Unable to post benchmark comment (${error.message}). Results are in the job summary.`
+              );
             }
+
+      - name: Note fork PR benchmark results
+        if: github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "::notice::Fork PR: skipping PR comment (GITHUB_TOKEN cannot write). Benchmark comparison is in this job's summary."

@@ -4,7 +4,8 @@
 //!
 //! This crate provides three decimal types optimized for database storage:
 //!
-//! - **[`Decimal`]**: Variable-length arbitrary precision (up to 131,072 digits)
+//! - **[`Decimal`]**: Variable-length arbitrary precision with an exponent
+//!   range of -16,383 through 131,072
 //! - **[`Decimal64`]**: Fixed 8-byte representation with embedded scale (precision ≤ 16 digits)
 //! - **[`Decimal64NoScale`]**: Fixed 8-byte representation with external scale (precision ≤ 18 digits)
 //!
@@ -12,11 +13,11 @@
 //!
 //! ## When to Use Which
 //!
-//! | Type | Precision | Scale | Storage | Best For |
-//! |------|-----------|-------|---------|----------|
-//! | `Decimal64NoScale` | ≤ 18 digits | External | 8 bytes | **Columnar storage**, aggregates |
-//! | `Decimal64` | ≤ 16 digits | Embedded | 8 bytes | Self-contained values |
-//! | `Decimal` | Unlimited | Unlimited | Variable | Scientific, very large numbers |
+//! | Type | Precision | Scale / exponent range | Storage | Best For |
+//! |------|-----------|-----------------------|---------|----------|
+//! | `Decimal64NoScale` | ≤ 18 digits | External scale | 8 bytes | **Columnar storage**, aggregates |
+//! | `Decimal64` | ≤ 16 digits | Embedded scale | 8 bytes | Self-contained values |
+//! | `Decimal` | Unlimited mantissa | -16,383 through 131,072 | Variable | Scientific, very large numbers |
 //!
 //! ## Decimal64NoScale (Recommended for Columnar Storage)
 //!
@@ -151,7 +152,7 @@ pub use encoding::{decode_parts_into, decode_special_value};
 ///
 /// The encoding uses:
 /// - 1 byte for the sign
-/// - Variable bytes for the exponent (typically 1-3 bytes)
+/// - 2 bytes for an inline exponent, or 6 bytes for an escaped exponent
 /// - 4 bits per decimal digit (BCD encoding, 2 digits per byte)
 #[derive(Clone)]
 pub struct Decimal {
@@ -1215,8 +1216,7 @@ mod tests {
 
     #[test]
     fn test_precision_overflow() {
-        // Exponent too large
-        let result = Decimal::from_str("1e20000");
+        let result = Decimal::from_str("1e200000");
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
@@ -1317,12 +1317,10 @@ mod tests {
 
     #[test]
     fn test_max_exponent_boundary() {
-        // Just under max exponent should work
-        let d = Decimal::from_str("1e16000").unwrap();
+        let d = Decimal::from_str("1e131071").unwrap();
         assert!(d.is_positive());
 
-        // Just over should fail
-        let result = Decimal::from_str("1e17000");
+        let result = Decimal::from_str("1e131072");
         assert!(result.is_err());
     }
 

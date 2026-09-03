@@ -10,7 +10,11 @@
 //! ```
 //!
 //! - **Sign byte**: 0x00 for negative, 0x80 for zero, 0xFF for positive
-//! - **Exponent**: Variable-length, biased encoding (inverted for negative numbers)
+//! - **Exponent**: A 2-byte biased value for exponents through `49148`; larger
+//!   exponents use `0xFFFD` followed by a 4-byte exponent. `0xFFFE` and
+//!   `0xFFFF` remain reserved for `+Infinity` and `NaN`. Negative values use
+//!   the complemented field: the escape marker is `0x0002` and `0x0000` is
+//!   reserved for `-Infinity`.
 //! - **Mantissa**: BCD-encoded digits, 2 per byte. Negative numbers store the
 //!   nine's complement of each digit and end with a `0xFF` terminator byte.
 //!
@@ -63,8 +67,26 @@ const RESERVED_NAN_EXP: u16 = 0xFFFF; // For positive sign byte
 
 /// Exponent bias to make all exponents positive for encoding
 const EXPONENT_BIAS: i32 = 16384;
-const MAX_EXPONENT: i32 = 32767 - EXPONENT_BIAS - 2; // Reserve top 2 values for Infinity/NaN
-const MIN_EXPONENT: i32 = -EXPONENT_BIAS + 1; // Reserve 0x0000 for -Infinity
+
+/// Written into the inline exponent field when the exponent is too large to fit
+/// there. On the positive side it sits directly below +Infinity (0xFFFE), so an
+/// escaped value sorts above every inline positive and below +Infinity; the
+/// negative side inherits the mirrored position from the usual inversion.
+const ESCAPED_EXPONENT_MARKER: u16 = 0xFFFD;
+
+/// Largest exponent still representable inline. The top three biased values are
+/// reserved for the escape marker, +Infinity and NaN.
+const MAX_INLINE_EXPONENT: i32 = 0xFFFC - EXPONENT_BIAS;
+
+/// Width of the extended exponent written after the escape marker.
+const EXTENDED_EXPONENT_LEN: usize = 4;
+
+/// Bound decoded exponents to keep `format_decimal` allocations reasonable.
+/// This also covers the complete finite PostgreSQL NUMERIC exponent range.
+const MAX_EXPONENT: i32 = 131_072;
+/// The lower bound reserves `0x0000` for negative infinity and covers the
+/// smallest exponent emitted by PostgreSQL NUMERIC.
+const MIN_EXPONENT: i32 = -EXPONENT_BIAS + 1;
 
 /// Errors that can occur during decimal encoding/decoding.
 #[derive(Error, Debug, Clone, PartialEq)]
@@ -325,7 +347,7 @@ fn parse_decimal(value: &str) -> Result<(bool, Vec<u8>, i32), DecimalError> {
     }
 
     // Parse exponent (required if 'e' or 'E' was seen)
-    let mut exp_offset: i32 = 0;
+    let mut exp_offset: i64 = 0;
     if seen_exponent_marker {
         if chars.peek().is_none() {
             return Err(DecimalError::InvalidFormat(
@@ -370,8 +392,15 @@ fn parse_decimal(value: &str) -> Result<(bool, Vec<u8>, i32), DecimalError> {
     // Extract the significant digits
     let significant = &all_digits[first_nonzero..=last_nonzero];
 
-    // Calculate the exponent
-    let exponent = (decimal_position as i32) - (first_nonzero as i32) + exp_offset;
+    // Calculate the exponent without allowing malformed input to overflow.
+    let decimal_position =
+        i64::try_from(decimal_position).map_err(|_| DecimalError::PrecisionOverflow)?;
+    let first_nonzero =
+        i64::try_from(first_nonzero).map_err(|_| DecimalError::PrecisionOverflow)?;
+    let exponent = decimal_position
+        .checked_sub(first_nonzero)
+        .and_then(|exponent| exponent.checked_add(exp_offset))
+        .ok_or(DecimalError::PrecisionOverflow)?;
 
     // Convert significant digits to bytes
     let digits: Vec<u8> = significant
@@ -380,25 +409,29 @@ fn parse_decimal(value: &str) -> Result<(bool, Vec<u8>, i32), DecimalError> {
         .collect();
 
     // Validate exponent range
-    if !(MIN_EXPONENT..=MAX_EXPONENT).contains(&exponent) {
+    if !(i64::from(MIN_EXPONENT)..=i64::from(MAX_EXPONENT)).contains(&exponent) {
         return Err(DecimalError::PrecisionOverflow);
     }
 
-    Ok((is_negative, digits, exponent))
+    Ok((is_negative, digits, exponent as i32))
 }
 
 /// Encodes the exponent as variable-length bytes.
 fn encode_exponent(result: &mut Vec<u8>, exponent: i32, is_negative: bool) {
-    // Bias the exponent to make it always positive
-    // Note: We add 1 to reserve 0x0000 for -Infinity on negative side
-    let biased = (exponent + EXPONENT_BIAS) as u16;
-
-    // For negative numbers, invert the exponent so larger negative numbers sort first
+    let escaped = exponent > MAX_INLINE_EXPONENT;
+    let biased = if escaped {
+        ESCAPED_EXPONENT_MARKER
+    } else {
+        (exponent + EXPONENT_BIAS) as u16
+    };
     let encoded = if is_negative { !biased } else { biased };
+    result.extend_from_slice(&encoded.to_be_bytes());
 
-    // Use 2 bytes for the exponent (big-endian)
-    result.push((encoded >> 8) as u8);
-    result.push((encoded & 0xFF) as u8);
+    if escaped {
+        let extended = exponent as u32;
+        let encoded = if is_negative { !extended } else { extended };
+        result.extend_from_slice(&encoded.to_be_bytes());
+    }
 }
 
 /// Decodes the exponent from bytes.
@@ -418,7 +451,28 @@ fn decode_exponent(bytes: &[u8], is_negative: bool) -> Result<(i32, usize), Deci
     }
 
     let biased = if is_negative { !encoded } else { encoded };
+
+    if biased == ESCAPED_EXPONENT_MARKER {
+        let extended = bytes
+            .get(2..2 + EXTENDED_EXPONENT_LEN)
+            .ok_or(DecimalError::InvalidEncoding)?;
+        let raw = u32::from_be_bytes([extended[0], extended[1], extended[2], extended[3]]);
+        let raw = if is_negative { !raw } else { raw };
+
+        // Only exponents that genuinely need the escape belong in this form;
+        // anything else would give a value two distinct encodings.
+        let exponent = i32::try_from(raw).map_err(|_| DecimalError::InvalidEncoding)?;
+        if !(MAX_INLINE_EXPONENT < exponent && exponent <= MAX_EXPONENT) {
+            return Err(DecimalError::InvalidEncoding);
+        }
+
+        return Ok((exponent, 2 + EXTENDED_EXPONENT_LEN));
+    }
+
     let exponent = (biased as i32) - EXPONENT_BIAS;
+    if !(MIN_EXPONENT..=MAX_INLINE_EXPONENT).contains(&exponent) {
+        return Err(DecimalError::InvalidEncoding);
+    }
 
     Ok((exponent, 2))
 }

@@ -12,7 +12,8 @@ Arbitrary precision decimals with lexicographically sortable byte encoding.
 
 This crate provides three decimal types optimized for database storage:
 
-- **`Decimal`**: Variable-length arbitrary precision (up to 131,072 digits)
+- **`Decimal`**: Variable-length arbitrary precision with an exponent range of
+  -16,383 through 131,072
 - **`Decimal64`**: Fixed 8-byte representation with embedded scale (precision ≤ 16 digits)
 - **`Decimal64NoScale`**: Fixed 8-byte representation with external scale (precision ≤ 18 digits)
 
@@ -22,11 +23,11 @@ All types support PostgreSQL special values (NaN, ±Infinity) with correct sort 
 
 ## When to Use Which
 
-| Type | Precision | Scale | Storage | Best For |
-|------|-----------|-------|---------|----------|
-| `Decimal64NoScale` | ≤ **18** digits | External | 8 bytes | **Columnar storage, aggregates** |
-| `Decimal64` | ≤ 16 digits | Embedded | 8 bytes | Self-contained values |
-| `Decimal` | Unlimited | Unlimited | Variable | Scientific, very large numbers |
+| Type | Precision | Scale / exponent range | Storage | Best For |
+|------|-----------|-----------------------|---------|----------|
+| `Decimal64NoScale` | ≤ **18** digits | External scale | 8 bytes | **Columnar storage, aggregates** |
+| `Decimal64` | ≤ 16 digits | Embedded scale | 8 bytes | Self-contained values |
+| `Decimal` | Unlimited mantissa | -16,383 through 131,072 | Variable | Scientific, very large numbers |
 
 ## Features
 
@@ -268,9 +269,13 @@ This crate implements the PostgreSQL NUMERIC specification:
 The encoding matches PostgreSQL's storage efficiency (2 bytes per 4 decimal digits):
 
 - 1 byte for sign
-- 2 bytes for exponent  
+- 2 bytes for an inline exponent, or 6 bytes for an escaped exponent
 - ~N/2 bytes for N-digit mantissa (BCD encoding: 2 digits per byte), plus 1 terminator byte for negative numbers
 - Special values: 3 bytes each
+
+Inline exponents use a biased 2-byte field. Exponents above `49,148` use the
+reserved `0xFFFD` escape marker followed by a 4-byte exponent; `0xFFFE` and
+`0xFFFF` are reserved for `+Infinity` and `NaN`.
 
 Example: A 9-digit number like `123456789` requires only ~8 bytes total.
 

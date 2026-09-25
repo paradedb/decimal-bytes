@@ -55,7 +55,7 @@ jobs:
         run: |
           echo "## Benchmark Comparison (vs previous commit)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Comparing \`${{ github.sha }}\` against previous commit" >> $GITHUB_STEP_SUMMARY
+          echo "Comparing \`${GITHUB_SHA}\` against previous commit" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           critcmp previous current >> $GITHUB_STEP_SUMMARY
@@ -99,14 +99,14 @@ jobs:
         run: cargo bench --bench benchmarks -- --noplot --save-baseline pr
 
       - name: Checkout base branch
-        run: git checkout ${{ github.base_ref }}
+        run: git checkout "${GITHUB_BASE_REF}"
 
       - name: Run benchmarks on base branch
         run: cargo bench --bench benchmarks -- --noplot --save-baseline base
 
       - name: Compare benchmarks
         run: |
-          echo "## Benchmark Comparison (PR vs ${{ github.base_ref }})" >> $GITHUB_STEP_SUMMARY
+          echo "## Benchmark Comparison (PR vs ${GITHUB_BASE_REF})" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           critcmp base pr >> $GITHUB_STEP_SUMMARY
@@ -135,7 +135,7 @@ jobs:
 
             </details>
 
-            > Compared against \`${{ github.base_ref }}\` branch
+            > Compared against \`${context.payload.pull_request.base.ref}\` branch
             `;
 
             try {

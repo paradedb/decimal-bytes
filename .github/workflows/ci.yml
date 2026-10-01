@@ -169,7 +169,9 @@ jobs:
         with:
           files: lcov.info
           fail_ci_if_error: true
-          token: ${{ secrets.CODECOV_TOKEN}}
+          token: ${{ secrets.CODECOV_TOKEN }}
+          # Dependabot cannot access Actions secrets; use a tokenless PR branch.
+          override_branch: ${{ github.event.pull_request.user.login == 'dependabot[bot]' && format('dependabot:{0}', github.head_ref) || '' }}
           slug: paradedb/decimal-bytes
 
       - name: Generate coverage summary

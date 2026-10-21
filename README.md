@@ -52,6 +52,10 @@ For arithmetic, the optional `rust_decimal` and `bigdecimal` features provide
 conversions to and from those libraries. See the [API documentation](https://docs.rs/decimal-bytes)
 for precision and scale constraints, encoding details, and conversion examples.
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and checks.
+
 ## License
 
 [MIT](LICENSE).

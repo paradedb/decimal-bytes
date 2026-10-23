@@ -58,4 +58,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and checks.
 
 ## License
 
-[MIT](LICENSE).
+MIT License. See [LICENSE](LICENSE) for details.
